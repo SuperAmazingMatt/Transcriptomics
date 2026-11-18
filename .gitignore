@@ -19,6 +19,8 @@ __pycache__/
 /records/
 /config/samples.csv
 /config/lab_dataset.json
+/config/bms_run.json
+/config/local_profile.json
 /config/reference_paths.json
 /docs/research_context.md
 /docs/bms_review.md

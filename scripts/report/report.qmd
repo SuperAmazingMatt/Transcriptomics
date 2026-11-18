@@ -1,0 +1,213 @@
+---
+title: "Bulk expression and sample QC"
+lang: en
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    toc-title: "Contents"
+    theme: cosmo
+    smooth-scroll: false
+    fig-responsive: true
+execute:
+  echo: false
+  error: false
+---
+
+<style>
+:root { --report-ink: #153533; --report-line: #cbdcd7; --report-green: #176754; }
+body { color: var(--report-ink); }
+#title-block-header { padding-bottom: .65rem; border-bottom: 3px solid var(--report-green); }
+h1, h2, h3 { color: var(--report-ink); }
+.table-scroll { overflow-x: auto; margin: .7em 0 1.4em; }
+.table-scroll table { font-size: .91em; font-variant-numeric: tabular-nums; }
+.table-scroll th { text-align: left; white-space: nowrap; }
+.table-scroll td { vertical-align: top; overflow-wrap: anywhere; }
+.table-scroll th, .table-scroll td { padding: .3rem .6rem; border-bottom: 1px solid var(--report-line); }
+.run-figure { margin: 1.4rem 0; }
+.run-figure img { max-width: 100%; height: auto; }
+.run-figure figcaption { color: #36514a; font-size: .92rem; }
+.summary-line { font-size: 1.2rem; }
+</style>
+
+```{r}
+#| include: false
+receipt <- readRDS("report-input.rds")
+run_dir <- receipt$dir
+idx <- receipt$index
+s <- idx$summary
+cfg <- idx$settings
+files <- idx$outputs
+tags <- htmltools::tags
+scalar <- function(x, fallback = "Unspecified") {
+  if (length(x) == 0L) return(fallback)
+  paste(as.character(unlist(x, use.names = FALSE)), collapse = ", ")
+}
+num <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+link <- function(key, label) {
+  tags$a(href = utils::URLencode(files[[key]]), label)
+}
+read_table <- function(key, n = -1L) {
+  read.delim(file.path(run_dir, files[[key]]), nrows = n, check.names = FALSE,
+             colClasses = "character", stringsAsFactors = FALSE, na.strings = NULL,
+             quote = "\"", comment.char = "", fileEncoding = "UTF-8")
+}
+table_html <- function(df) {
+  if (!nrow(df)) return(NULL)
+  tags$div(class = "table-scroll", htmltools::HTML(knitr::kable(df, format = "html",
+           escape = TRUE, row.names = FALSE)))
+}
+show_plot <- function(key, description, caption) {
+  if (is.null(files[[key]])) return(NULL)
+  tags$figure(class = "run-figure",
+    tags$img(src = knitr::image_uri(file.path(run_dir, files[[key]])), alt = description),
+    tags$figcaption(caption))
+}
+named_table <- function(values, headings) {
+  if (!length(values)) return(NULL)
+  df <- data.frame(names(values), vapply(values, scalar, character(1)), check.names = FALSE)
+  names(df) <- headings
+  table_html(df)
+}
+is_single <- s$samples == 1L
+emit <- function(...) cat(as.character(htmltools::tagList(...)), "\n")
+```
+
+## Overview
+
+```{r}
+#| results: asis
+emit(tags$p(class = "summary-line", tags$strong(scalar(idx$dataset$id)), " · ",
+            num(s$genes), " genes across ", num(s$samples),
+            if (is_single) " library." else " libraries."),
+     named_table(idx$dataset[intersect(c("species", "assembly", "annotation"), names(idx$dataset))],
+                 c("Reference", "Recorded value")),
+     if (!is.null(idx$dataset$notes)) tags$p(scalar(idx$dataset$notes)))
+```
+
+This completed expression analysis starts from gene-level integer counts. It describes expression and library quality. Differential expression and pathway testing require a comparison. Read-level quality and alignment require upstream evidence.
+
+## Expression
+
+```{r}
+#| results: asis
+emit(tags$p(tags$strong(num(s$displayed_genes)), " of ", num(s$genes),
+            " genes meet the display rule of at least ", scalar(cfg$detection_cpm),
+            " CPM in at least ", scalar(cfg$min_samples),
+            if (cfg$min_samples == 1L) " library." else " libraries."),
+     tags$p("The complete exports contain all input genes in ",
+            link("raw", "raw counts"), ", ", link("cpm", "CPM"), " and ",
+            link("logcpm", "log2 CPM"), ". The ", link("display", "filtered table"),
+            " uses the ", scalar(cfg$display_scale), " scale."))
+preview <- read_table("display", 6L)
+if (nrow(preview)) {
+  preview <- preview[, seq_len(min(7L, ncol(preview))), drop = FALSE]
+  for (i in seq_along(preview)[-1L]) {
+    preview[[i]] <- format(signif(as.numeric(preview[[i]]), 4), trim = TRUE)
+  }
+  emit(tags$p("Preview of the filtered table. Values are rounded to four significant digits."),
+       table_html(preview))
+} else {
+  emit(tags$p("The display selection is empty at these thresholds."))
+}
+```
+
+CPM measures counts per million, using the effective library size as the denominator. Effective library size is the sum of gene counts multiplied by the normalization factor. Longer genes can accumulate more counts at the same transcript abundance. CPM retains this gene-length dependence.
+
+```{r}
+#| results: asis
+emit(tags$p(if (is_single) {
+  "The single library uses a normalization factor of 1. Its CPM reflects its own library size."
+} else {
+  paste("edgeR calculated", s$normalization, "library normalization factors with all input genes available.")
+}, " edgeR computed log2 CPM with a prior count of ", scalar(s$prior_count),
+   " scaled to the effective library sizes. Detection uses the unlogged CPM values."))
+```
+
+## Library quality
+
+Raw library size sums gene counts for each sample. Detected genes meet the CPM threshold in that sample. Nonzero genes have at least one input count.
+
+```{r}
+#| results: asis
+qc <- read_table("qc")
+for (key in intersect(c("norm_factor", "effective_library_size"), names(qc))) {
+  qc[[key]] <- format(signif(as.numeric(qc[[key]]), 6L), big.mark = ",", trim = TRUE)
+}
+if (identical(qc$sample_id, qc$plot_label)) qc$plot_label <- NULL
+labels <- c(sample_id = "Sample", plot_label = "Figure label", library_size = "Raw library size", norm_factor = "Normalization factor",
+            effective_library_size = "Effective size", detected_genes = "Detected genes",
+            nonzero_genes = "Nonzero genes", assigned = "Assigned total")
+matched <- intersect(names(qc), names(labels))
+names(qc)[match(matched, names(qc))] <- unname(labels[matched])
+emit(table_html(qc),
+     show_plot("library_plot", "Raw library sizes for the mapped sample identifiers.",
+               "Library size across all counted genes."),
+     show_plot("distribution_plot", "Sample-wise distributions of normalized expression.",
+               paste("Tukey boxplots of log2 CPM across", num(s$qc_genes),
+                     "genes with a nonzero count in at least one library.")))
+```
+
+### Sample relationships
+
+```{r}
+#| results: asis
+if (is_single) {
+  emit(tags$p("PCA, MDS, sample-to-sample correlation and differential expression are inapplicable with one library. The distribution above describes expression within this sample."))
+} else {
+  emit(tags$p("Sample correlations use Pearson correlation of log2 CPM across genes with a nonzero count in at least one library. ",
+              scalar(s$status$correlation)),
+       show_plot("correlation_plot", "Pairwise correlations of sample expression profiles.",
+                 "Pearson correlations on normalized log2 CPM."),
+       tags$p("PCA ranks eligible genes by variance in log2 CPM. The analysis centers each selected gene across libraries and uses its original variance. ",
+              "The selected gene count is ", num(s$pca_genes), " and the number of supported axes is ",
+              num(s$pca_axes), ". ",
+              scalar(s$status$pca)),
+       show_plot("pca_plot", "Principal component scores for the mapped libraries.",
+                 "Principal component scores from the most variable eligible genes."))
+}
+```
+
+## Files from this run
+
+The tables and figure files below sit beside this standalone report in the run directory.
+
+```{r}
+#| results: asis
+file_labels <- c(raw = "Raw gene counts", cpm = "Normalized CPM", logcpm = "Normalized log2 CPM",
+                display = "Filtered expression", qc = "Sample QC", mapping = "Sample mapping",
+                correlation = "Sample correlations", pca_scores = "PCA scores",
+                pca_variance = "PCA variance explained", pca_features = "Genes used for PCA",
+                library_plot = "Library size figure", distribution_plot = "Expression distribution figure",
+                correlation_plot = "Correlation figure", pca_plot = "PCA figure", session = "R session information",
+                resolved = "Resolved configuration")
+emit(tags$ul(lapply(setdiff(names(files), "report"), function(key) {
+  label <- if (key %in% names(file_labels)) file_labels[[key]] else basename(files[[key]])
+  tags$li(link(key, label), " (", files[[key]], ")")
+})))
+```
+
+## Methods and provenance
+
+```{r}
+#| results: asis
+emit(tags$p("Run ", scalar(idx$run_id), " started ", scalar(idx$started_utc), " (UTC) with preset ",
+            scalar(idx$preset), ". ",
+            "Library identifiers were mapped to the count matrix by exact column identifier."),
+     tags$details(tags$summary("Sample identifiers and metadata"), table_html(read_table("mapping"))),
+     tags$h3("Input identities"),
+     table_html(do.call(rbind, lapply(names(idx$inputs), function(key) {
+       input <- idx$inputs[[key]]
+       data.frame(Input = key, Identifier = scalar(input$logical_id), Path = scalar(input$path),
+                  SHA256 = scalar(input$sha256), check.names = FALSE)
+     }))),
+     tags$h3("Resolved settings"), named_table(cfg, c("Setting", "Value")),
+     tags$h3("Software"), named_table(idx$versions, c("Component", "Version or platform")),
+     if (!is.null(files$session)) tags$details(tags$summary("R session information"),
+       tags$pre(paste(readLines(file.path(run_dir, files$session), warn = FALSE), collapse = "\n"))))
+stage_names <- setdiff(names(idx$stages), c("report", "publication"))
+if (length(stage_names)) {
+  emit(tags$h3("Analysis stages"), named_table(idx$stages[stage_names], c("Stage", "Outcome")))
+}
+```

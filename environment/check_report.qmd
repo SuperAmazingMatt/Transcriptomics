@@ -1,0 +1,21 @@
+---
+title: "Transcriptomics runtime check"
+format: html
+execute:
+  echo: false
+---
+
+```{r}
+project_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)
+runtime_library <- normalizePath(.Library, winslash = "/")
+allowed <- c(project_library, runtime_library)
+stopifnot(all(normalizePath(.libPaths(), winslash = "/") %in% allowed))
+for (package in c("shiny", "knitr", "rmarkdown", "edgeR")) {
+  stopifnot(requireNamespace(package, quietly = TRUE))
+  actual_library <- dirname(normalizePath(find.package(package), winslash = "/"))
+  stopifnot(identical(actual_library, project_library))
+}
+value <- shiny::reactiveVal(20L)
+value(21L)
+cat(sprintf("Runtime check passed with value %d.", 2L * shiny::isolate(value())))
+```
